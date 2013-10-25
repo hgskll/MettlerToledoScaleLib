@@ -1,0 +1,532 @@
+
+//SERIAL COMMUNICATIONS
+import processing.serial.*;
+Serial myPort;  // Create object from Serial class
+int val;        // Data received from the serial port
+int cmd;
+long lastmillis = 0;
+
+int inByte = -1;
+int i, j, k;
+PFont standardFont = createFont("Arial", 20);
+String serialstring = "";
+String tempserialstring = "";
+
+//MESSAGE PARAMETERS
+int n_msgstrings = 5;
+String msgstring[] = {
+  "D4 LAB", "SAMPLE", "TRACKING", "SYSTEM", "ONLINE"
+};
+int msgdelay = 700;
+
+//SCALE READING VALUES
+String readstr = "";
+float  readfloat = -1;
+float movingaverage = 0;//moving average of data points
+float tolerance = 1;//grams
+int errcode = 0;
+char A, B;//errorcode working variables
+
+//button stuff
+int n_cmd = 4;
+int activecmd = -1;
+String l_cmd[] = {
+  "ACCEPT", "CANCEL", "SAVE", "PRINT"
+};
+String outputtext = "";
+RoundRectButton cmdbtn[] = new RoundRectButton[n_cmd];
+
+
+//SIEVE INFO
+int n_sieve = 8;
+String l_sieve[] = {
+  "1-1/2''", "1''", "3/4''", "1/2''", "3/8''", "#4", "#8", "#30"
+};
+RoundRectButton sievebtn[] = new RoundRectButton[n_sieve];
+float w_sieve[] = new float[n_sieve];
+float p_sieve[]= new float[n_sieve];
+float qp_sieve[]= new float[n_sieve];
+float totalmass=0;
+float initialmass=0;
+float x = 0; //use gradation variable in this app?  use other app?
+
+int activesieve = -1;
+
+//gradation specs are hardcoded for now-------------------
+int upperlimit[] = {
+  100, 100, 75, 75, 75, 16, 6, 6
+};
+int lowerlimit[] = {
+  100, 88, 45, 45, 45, 0, 0, 0
+};//_______________________________________________________
+
+//colors for buttons
+color col3 = #FFC57E;
+color overCol3 = #FF8D00;
+color pressedCol3 = #814700;
+
+boolean locked = false;
+// Define and create circle button
+color buttoncolor = color(204);
+color highlight = color(153);
+
+
+//GRAPHICS FORMATTING
+//pdf output
+import processing.pdf.*;
+//need to add more here
+
+//window
+int wwidth = 800;
+int wheight = 600;
+int border = 20;
+int br = 5;// button radius
+String weightstring = "";
+color weighttextfill ;
+
+//plot area
+int pwidth = 500;
+int pheight = 400;
+
+//calculated values
+int cx = 0;//command button dimensions
+int cy = 0;
+int cwidth = 0; 
+int cheight = 0;
+
+int sx = 0;//sieve button dimensions
+int sy = 0;
+int swidth = 0; 
+int sheight = 0;
+boolean splashLCD = true;
+
+
+//scale defaults
+//static String iname = "COM1"; //it's whatevs
+static int irate = 2400;
+static char iparity = 'E';
+static int idatabits = 7;
+static float istopbits = 1;
+
+void buttonspawn() {
+  //button 1
+  buttoncolor = color(200);
+  highlight = color(80); 
+  //cmdButtons = new RectButton[n_cmd];
+  //cmdButtons = new RectButton[n_sieve];
+}  
+
+void setup() 
+{
+  frame.setTitle("Caltrans District 4 Aggregate Gradation Station");
+  //GRAPHICS SETTINGS
+  size(wwidth, wheight);
+  background(255);
+  fill(0);
+  textFont(standardFont);
+  textAlign(CENTER);
+  smooth();
+
+  //GRAPHICS CALIBRATION
+
+  //command button dimensions
+  cwidth = wwidth - pwidth - 3*border;
+  cheight = (pheight - (n_cmd-1)*border)/n_cmd;
+  cx = pwidth + 2*border;
+  cy = border;
+  //initialize command buttons
+  for (i=0;i<n_cmd;i++) {
+    cmdbtn[i] = new RoundRectButton(br, cwidth, cheight, cx, cy + i*(cheight + border), col3, overCol3, pressedCol3);
+    //cmdbtn[i] = new RoundRectButton(10,70,255,110,100,#FFC57E,#FFC57E,#FFC57E);
+  }
+
+  //sieve button dimensions
+  sheight = wheight - pheight - 3*border;
+  swidth = (pwidth - (n_sieve-1)*border)/n_sieve;
+  sx = border;
+  sy = pheight + 2*border;
+  //initialize sieve buttons
+  for (i=0;i<n_sieve;i++) {
+    sievebtn[i] = new RoundRectButton(br, swidth, sheight, sx+ i*(swidth + border), sy, col3, overCol3, pressedCol3);
+    w_sieve[i] = 0.0;
+    //cmdbtn[i] = new RoundRectButton(10,70,255,110,100,#FFC57E,#FFC57E,#FFC57E);
+  }
+
+  //SERIAL CONNECTION
+  String portName = Serial.list()[0];
+  print("Connecting to ");
+  println(portName);
+  myPort = new Serial(this, portName, irate, iparity, idatabits, istopbits );
+}
+
+
+void draw() {
+
+  background(0);
+  textAlign(CENTER);
+  //fill(50);
+
+  //DRAW PLOT AREA
+  fill(50);
+  rect(border, border, pwidth, pheight);
+
+  //SPLASH SCREEN FOR FIRST LOOP
+  if (splashLCD) { 
+    sendmsgarray();
+    splashLCD=false;
+  }
+
+
+
+  //DRAW GRIDLINES --- ALL OF THESE TO DO v v v 
+  //DRAW Y-AXIS LABELS
+  //DRAW X-AXIS LABELS-------------------------
+
+  //DRAW CMD BUTTONS
+  for (i=0;i<n_cmd;i++) {
+    cmdbtn[i].update();
+    cmdbtn[i].display();
+    fill(0);
+    text(l_cmd[i], cx + cwidth / 2, cy + (i+.5)*(cheight + border));
+  }
+
+  //DRAW SIEVE BUTTONS
+  for (i=0;i<n_sieve;i++) {
+    sievebtn[i].update();
+    sievebtn[i].display();
+    fill(0);
+    if (w_sieve[i]>0) {
+      fill(255);
+    }
+    text(l_sieve[i], sx + (i+0.5)*(swidth + border), sy + sheight /2);
+    //RoundRectButton (int radius, int sizeX, int sizeY, int posX, int posY, color c, color o, color p){
+  }
+
+  //READ DATA FROM SCALE
+  //delay(50);//maybe needs to be adjusted
+  byte[] inBuffer = new byte[7];
+  while (myPort.available () > 13) {
+    inBuffer = myPort.readBytes();
+    myPort.readBytes(inBuffer);
+    if (inBuffer != null) {
+
+      //IF DATA, SAVE TO STRING
+      readstr = new String(inBuffer);
+      print("Data Received: ");
+      print(readstr);
+
+      A = readstr.charAt(0);
+      B = readstr.charAt(1);
+
+      //DETERMINE ERROR CODE
+      switch (A) {
+      case 83:
+        switch (B) {
+        case 32:
+          errcode = 0;
+          break;
+        case 68:
+          errcode = 1;
+          break;
+        case 73:
+          errcode = 2;
+          break;
+        }
+        break;
+      default:
+        errcode = -1;//int(readstr.substring(1));
+        break;
+      }
+      //PARSE AND CONVERT FLOATING POINT NUMBER
+      readfloat = float(readstr.substring(3, (readstr.length()-3)));
+      print("Calculated Weight: ");
+      weightstring = nfc(readfloat, 1) + " g";
+      println(weightstring);
+      print("Error Code :");
+      println(errcode);
+      //println(" g");
+
+      //SHOW CURRENT WEIGHT IN WINDOW
+      switch (errcode) {//assign font color based on error code
+      case -1:
+        weighttextfill=color(0);
+        break;
+      case 0:
+        weighttextfill=color(0, 255, 0);
+        break;
+      case 1:
+        weighttextfill=color(255, 255, 0);
+        break;
+      case 2:
+        weighttextfill=color(255, 0, 0);
+        break;
+      }
+
+      //text(readfloat + " g", wwidth - cwidth / 2 - border, wheight - sheight/2 - border);
+      //text("poop" , 100 , 100 );
+    }
+  }
+  //SEND REQUEST IF NO DATA IN SERIAL BUFFER
+  if (myPort.available()==0) {
+    if (millis()>lastmillis+150) {
+      sendimmediately();
+      lastmillis=millis();
+    }
+  }
+
+  //DISPLAY WEIGHT FROM SCALE
+  fill(weighttextfill);
+  text(weightstring, wwidth-border-cwidth/2, wheight-border-sheight/2 );
+
+  //DISPLAY ACTIVE SIEVE IF APPLICABLE
+  if (activesieve>=0) {
+    fill(255);
+    text(l_sieve[activesieve], wwidth-border-cwidth/2, wheight-sheight/2);
+  }  
+
+  //CHECK FOR COMMANDS
+  if (activecmd>=0) {
+    switch(activecmd) {
+
+      //ACCEPT 
+    case 0:
+      if (activesieve>=0) {
+        savesieve();
+        cancel();
+      }
+      break;
+
+      //CANCEL
+    case 1:
+      cancel();
+      break;
+
+      //RUN GRADATION
+    case 2:
+      rungradation();
+      checkgradation();
+      cancel();
+      break;
+
+      //PRINT
+    case 3:
+      printreport();
+      cancel();
+      break;
+    }
+  }
+}
+
+
+
+
+
+
+//GRADATION PROCESSING LIBRARY
+//HAROLD GASKILL APRIL-MAY 2013
+void savesieve() {
+  w_sieve[activesieve]=readfloat;
+  println(weightstring + " retained on " + l_sieve[activesieve] + " sieve.");
+  activesieve = -1;
+  activecmd = -1;
+}
+
+void cancel() {
+  activesieve = -1;
+  activecmd = -1;
+}
+
+void printreport() {
+  //put some shit here...figure out PDF library
+}
+
+void checkgradation() {//HVG
+
+  //before running through each sieve
+  for (i=0;i<n_sieve;i++) {
+    //for each sieve, check gradation
+    // X = upperlimit[i] - p_sieve[i];
+    // X = p_sieve[i] - lowerlimit[i];
+    //The above is dummy code for now - will update with actual criteria later
+  }
+  //after running through each sieve
+}
+
+void setgradationlimits() {//HVG
+  //before running through each sieve
+  for (i=0;i<n_sieve;i++) {
+    //for each sieve, check gradation
+    // X = upperlimit[i] - p_sieve[i];
+    // X = p_sieve[i] - lowerlimit[i];
+    //The above is dummy code for now - will update with actual criteria later
+  }
+  //after running through each sieve
+}
+
+void rungradation() {//HVG
+  /*REFERENCE FOR VARIABLE NAMES
+   //SIEVE INFO
+   int n_sieve = 8;
+   String l_sieve[] = {"1-1/2", "1", "3/4", "1/2","3/8", "#4", "#8", "#30"};
+   //gradation specs are hardcoded for now
+   float upperlimit[] = {100,100,75,75,75,16,6,6};
+   float lowerlimit[] = {100,88,45,45,45,0,0,0};
+   float w_sieve[] ;
+   float p_sieve[];
+   float qp_sieve[];
+   float totalmass=0;
+   float initialmass=0;
+   float x = 0; //use gradation variable in this app?  use other app?
+   */
+  println("Beginning gradation analysis");
+  totalmass = 0;
+  //first pass to establish masses
+  for (i=0;i<n_sieve;i++) {
+    totalmass += w_sieve[i];
+    qp_sieve[i]=totalmass;
+  }
+  println("Total mass: " + totalmass + " g");
+  //test if masses add up DUMMY VARIABLE
+  x = initialmass - totalmass;
+  //second pass to establish mass fractions
+  for (i=0;i<n_sieve;i++) {
+    p_sieve[i] = (totalmass - qp_sie ve[i]) *100/ totalmass;
+    //println(l_sieve[i]);
+    //println(w_sieve[i]);
+    println("Mass retained on " + l_sieve[i] + " sieve: " + w_sieve[i] + " g");
+    println("Percent passing " + l_sieve[i] + " sieve: " + p_sieve[i] + "%");
+  }
+}
+
+
+
+
+
+
+
+//METTLER TOLEDO PROCESSING LIBRARY
+//HAROLD GASKILL APRIL-MAY 2013
+
+//DIRECT COMMANDS________________________________________________
+
+//SEND WEIGHT IMMEDIATELY - HVG
+void sendimmediately() {
+  myPort.write(83);//S
+  myPort.write(73);//I
+  myPort.write(13);//CR
+  myPort.write(10);//LF
+}
+
+//SEND NEXT STABLE WEIGHT
+void send() {
+  myPort.write(83);//S
+  myPort.write(13);//CR
+  myPort.write(10);//LF
+}
+
+//CLEAR DISPLAY OVERRIDE
+void clearscaledisplay() {
+  myPort.write(68);//D
+  myPort.write(13);//CR
+  myPort.write(10);//LF
+}
+
+//INCOMING DATA PROCESSING - HVG
+void geterrcode() {
+  switch (int(readstr.substring(0))) {
+  case 83:
+    switch (int(readstr.substring(1))) {
+    case 32:
+      errcode = 0;
+      break;
+    case 68:
+      errcode = 1;
+      break;
+    case 73:
+      errcode = 2;
+      break;
+    }
+    break;
+  default:
+    errcode = int(readstr.substring(1));
+  }
+}
+
+
+
+//COMPLEX COMMANDS - HVG
+void sendmsgarray() {
+
+  //clear screen and delay at beginning of message 
+  clearscaledisplay(); //
+  delay(msgdelay);
+
+  //send each message, followed by a delay  
+  for (i=0;i<n_msgstrings;i++) {
+    //send display control command
+    myPort.write(68);//D
+    myPort.write(32);//space
+
+    for (j=0;j<msgstring[i].length();j++) {
+      //add char to display control command
+      myPort.write(msgstring[i].charAt(j));
+    }   
+
+    //send CR/LF to show sent command on display
+    myPort.write(13);//CR
+    myPort.write(10);//LF
+    delay(msgdelay);
+  }
+
+  clearscaledisplay();
+  delay(msgdelay);
+}
+//END METTLER TOLEDO LIBRARY _____________________________________________________________
+
+
+
+
+
+
+//ROUNDRECTBUTTON LIBRARY http://www.openprocessing.org/sketch/5099
+//modified to use command and sieve button arrays
+void mousePressed() {
+
+  //check to see if command buttons have been pressed
+  for (k=0;k<n_cmd;k++) {
+    if (cmdbtn[k].press()) {
+      //if cmdbtn[i].pressed{
+      outputtext=l_cmd[k];
+      activecmd=k;  
+      println(outputtext);
+    }
+  }
+
+  //check to see if sieve buttons have been pressed
+  for (k=0;k<n_sieve;k++) {
+    if (sievebtn[k].press()) {
+      outputtext=l_sieve[k]; 
+      println(outputtext);
+      activesieve = k;
+    }
+  }
+}
+void mouseReleased() {
+
+  for (k=0;k<n_cmd;k++) {
+    cmdbtn[k].release();
+  }
+
+  for (k=0;k<n_sieve;k++) {
+    sievebtn[k].release();
+  }
+}
+
+
+
+
+
+
+
+
+
